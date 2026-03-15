@@ -10,7 +10,7 @@
 extern "C" {
 #endif
 
-    #include "lvgl/lvgl.h"
+#include "lvgl/lvgl.h"
 
 #include "ui_helpers.h"
 #include "components/ui_comp.h"
@@ -26,10 +26,10 @@ extern "C" {
 extern lv_obj_t *ui____initial_actions0;
 
 // IMAGES AND IMAGE SETS
-LV_IMG_DECLARE( ui_img_frame_1_png);   // assets/Frame 1.png
+LV_IMG_DECLARE(ui_img_frame_1_png); // assets/Frame 1.png
 
 // FONTS
-LV_FONT_DECLARE( ui_font_Mons110);
+LV_FONT_DECLARE(ui_font_Mons110);
 
 // UI INIT
 void ui_init(void);

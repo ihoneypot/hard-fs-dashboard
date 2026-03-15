@@ -2,6 +2,23 @@
     "version": "2.0.0",
     "tasks": [
         {
+            "label": "Clean Debug",
+            "type": "shell",
+            "command": "${config:cmake.cmakePath}",
+            "args": [
+                "--build",
+                "${workspaceFolder}/build/Debug",
+                "--target",
+                "clean"
+            ],
+            "problemMatcher": [],
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "clear": true
+            }
+        },
+        {
             "label": "Configure Debug",
             "type": "shell",
             "command": "${config:cmake.cmakePath}",
@@ -38,6 +55,22 @@
             }
         },
         {
+            "label": "Clean Configure Debug",
+            "type": "shell",
+            "command": "${config:cmake.cmakePath}",
+            "args": [
+                "--preset",
+                "Debug",
+                "--fresh"
+            ],
+            "problemMatcher": [],
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "clear": true
+            }
+        },
+        {
             "label": "Build Debug",
             "type": "shell",
             "command": "${config:cmake.cmakePath}",
@@ -49,6 +82,21 @@
             ],
             "group": "build",
             "problemMatcher": "$gcc",
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "clear": true
+            }
+        },
+        {
+            "label": "Clean Build and Flash Board",
+            "dependsOrder": "sequence",
+            "dependsOn": [
+                "Clean Configure Debug",
+                "Build Debug",
+                "Flash Board"
+            ],
+            "problemMatcher": [],
             "presentation": {
                 "reveal": "always",
                 "panel": "shared",
