@@ -2,3 +2,4 @@ build
 !.settings
 
 .DS_Store
+.pre-commit-cache/

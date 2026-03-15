@@ -22,4 +22,3 @@ extern lv_obj_t *ui_Image1;
 #endif
 
 #endif
-
