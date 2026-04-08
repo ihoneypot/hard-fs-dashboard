@@ -18,10 +18,10 @@ int main(void) {
   SCB_EnableDCache();
 
   HAL_Init();
+
   SystemClock_Config();
 
-  BSP_LED_Init(LED1);
-  BSP_LED_Init(LED2);
+  HAL_Delay(50);
 
   qspi_init.InterfaceMode = MT25TL01G_QPI_MODE;
   qspi_init.TransferRate = MT25TL01G_DTR_TRANSFER;
@@ -34,6 +34,10 @@ int main(void) {
   if (BSP_QSPI_EnableMemoryMappedMode(0) != BSP_ERROR_NONE) {
     Error_Handler();
   }
+
+  __DSB();
+  __ISB();
+  SCB_InvalidateICache();
 
   lv_init();
   LVGL_TickSetEnabled(1U);
@@ -50,10 +54,18 @@ int main(void) {
 void SystemClock_Config(void) {
   RCC_OscInitTypeDef RCC_OscInitStruct = {0};
   RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
+  uint32_t timeout_start = HAL_GetTick();
+
+  if (HAL_PWREx_ConfigSupply(PWR_LDO_SUPPLY) != HAL_OK) {
+    Error_Handler();
+  }
 
   __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE1);
 
   while (!__HAL_PWR_GET_FLAG(PWR_FLAG_VOSRDY)) {
+    if ((HAL_GetTick() - timeout_start) > 100U) {
+      Error_Handler();
+    }
   }
 
   RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSE;
@@ -90,7 +102,9 @@ void SystemClock_Config(void) {
 }
 
 void Error_Handler(void) {
+  __disable_irq();
   while (1) {
+    __NOP();
   }
 }
 
