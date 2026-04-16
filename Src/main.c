@@ -46,6 +46,7 @@ int main(void) {
   ui_init();
 
   while (1) {
+    ui_step_main_screen_slider_demo();
     HAL_Delay(5);
     lv_timer_handler();
   }

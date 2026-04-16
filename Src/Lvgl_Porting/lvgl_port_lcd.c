@@ -11,6 +11,8 @@ static LTDC_HandleTypeDef hltdc;
 static lv_disp_draw_buf_t draw_buf;
 static lv_disp_drv_t disp_drv;
 static lv_disp_t *display;
+static lv_color_t *const framebuffer_1 = (lv_color_t *)LCD_LAYER_0_ADDRESS;
+static lv_color_t *const framebuffer_2 = (lv_color_t *)LCD_LAYER_1_ADDRESS;
 
 static void lcd_error(void) {
   Error_Handler();
@@ -149,9 +151,13 @@ static void lcd_ltdc_init(void) {
 
 static void disp_flush(lv_disp_drv_t *drv, const lv_area_t *area, lv_color_t *color_p) {
   LV_UNUSED(area);
-  LV_UNUSED(color_p);
 
   SCB_CleanInvalidateDCache();
+
+  if (HAL_LTDC_SetAddress(&hltdc, (uint32_t)color_p, 0) != HAL_OK) {
+    lcd_error();
+  }
+
   lv_disp_flush_ready(drv);
 }
 
@@ -169,19 +175,19 @@ void LCD_init(void) {
   lcd_panel_power_on();
   lcd_ltdc_init();
 
-  memset(
-      (void *)LCD_LAYER_0_ADDRESS, 0, LCD_DEFAULT_WIDTH * LCD_DEFAULT_HEIGHT * sizeof(lv_color_t));
+  memset(framebuffer_1, 0, LCD_DEFAULT_WIDTH * LCD_DEFAULT_HEIGHT * sizeof(lv_color_t));
+  memset(framebuffer_2, 0, LCD_DEFAULT_WIDTH * LCD_DEFAULT_HEIGHT * sizeof(lv_color_t));
   SCB_CleanInvalidateDCache();
 
   lv_disp_draw_buf_init(
-      &draw_buf, (void *)LCD_LAYER_0_ADDRESS, NULL, LCD_DEFAULT_WIDTH * LCD_DEFAULT_HEIGHT);
+      &draw_buf, framebuffer_1, framebuffer_2, LCD_DEFAULT_WIDTH * LCD_DEFAULT_HEIGHT);
 
   lv_disp_drv_init(&disp_drv);
   disp_drv.hor_res = LCD_DEFAULT_WIDTH;
   disp_drv.ver_res = LCD_DEFAULT_HEIGHT;
   disp_drv.flush_cb = disp_flush;
   disp_drv.draw_buf = &draw_buf;
-  disp_drv.direct_mode = 1;
+  disp_drv.full_refresh = 1;
   display = lv_disp_drv_register(&disp_drv);
 
   if (display == NULL) {
