@@ -11,16 +11,20 @@ static LTDC_HandleTypeDef hltdc;
 static lv_disp_draw_buf_t draw_buf;
 static lv_disp_drv_t disp_drv;
 static lv_disp_t *display;
+static lv_color_t *const framebuffer_1 = (lv_color_t *)LCD_LAYER_0_ADDRESS;
+static lv_color_t *const framebuffer_2 = (lv_color_t *)LCD_LAYER_1_ADDRESS;
 
 static void lcd_error(void) {
   Error_Handler();
 }
 
-static void lcd_panel_power_on(void) {
+static void lcd_panel_prepare(void) {
   GPIO_InitTypeDef gpio = {0};
 
   LCD_DISP_EN_GPIO_CLK_ENABLE();
   LCD_BL_CTRL_GPIO_CLK_ENABLE();
+  LCD_DISPLAY_MODE_GPIO_CLK_ENABLE();
+  LCD_RESET_GPIO_CLK_ENABLE();
 
   gpio.Pin = LCD_DISP_EN_Pin | LCD_BL_CTRL_Pin;
   gpio.Mode = GPIO_MODE_OUTPUT_PP;
@@ -28,7 +32,27 @@ static void lcd_panel_power_on(void) {
   gpio.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(LCD_DISP_EN_GPIO_Port, &gpio);
 
+  gpio.Pin = LCD_DISPLAY_MODE_Pin;
+  HAL_GPIO_Init(LCD_DISPLAY_MODE_GPIO_Port, &gpio);
+
+  gpio.Pin = LCD_RESET_Pin;
+  HAL_GPIO_Init(LCD_RESET_GPIO_Port, &gpio);
+
+  HAL_GPIO_WritePin(LCD_BL_CTRL_GPIO_Port, LCD_BL_CTRL_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(LCD_DISP_EN_GPIO_Port, LCD_DISP_EN_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(LCD_DISPLAY_MODE_GPIO_Port, LCD_DISPLAY_MODE_Pin, GPIO_PIN_SET);
+  HAL_GPIO_WritePin(LCD_RESET_GPIO_Port, LCD_RESET_Pin, GPIO_PIN_RESET);
+}
+
+static void lcd_panel_power_on(void) {
   HAL_GPIO_WritePin(LCD_DISP_EN_GPIO_Port, LCD_DISP_EN_Pin, GPIO_PIN_SET);
+  HAL_Delay(20);
+
+  HAL_GPIO_WritePin(LCD_RESET_GPIO_Port, LCD_RESET_Pin, GPIO_PIN_SET);
+  HAL_Delay(120);
+}
+
+static void lcd_backlight_on(void) {
   HAL_GPIO_WritePin(LCD_BL_CTRL_GPIO_Port, LCD_BL_CTRL_Pin, GPIO_PIN_SET);
 }
 
@@ -55,8 +79,6 @@ static void lcd_ltdc_msp_init(void) {
   __HAL_RCC_GPIOI_CLK_ENABLE();
   __HAL_RCC_GPIOJ_CLK_ENABLE();
   __HAL_RCC_GPIOH_CLK_ENABLE();
-  LCD_DISPLAY_MODE_GPIO_CLK_ENABLE();
-  LCD_RESET_GPIO_CLK_ENABLE();
 
   gpio.Pin = GPIO_PIN_5 | GPIO_PIN_4 | GPIO_PIN_6 | GPIO_PIN_3 | GPIO_PIN_7 | GPIO_PIN_2;
   gpio.Mode = GPIO_MODE_AF_PP;
@@ -78,17 +100,6 @@ static void lcd_ltdc_msp_init(void) {
 
   __HAL_RCC_LTDC_FORCE_RESET();
   __HAL_RCC_LTDC_RELEASE_RESET();
-
-  gpio.Pin = LCD_DISPLAY_MODE_Pin;
-  gpio.Mode = GPIO_MODE_OUTPUT_PP;
-  gpio.Pull = GPIO_NOPULL;
-  gpio.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(LCD_DISPLAY_MODE_GPIO_Port, &gpio);
-  HAL_GPIO_WritePin(LCD_DISPLAY_MODE_GPIO_Port, LCD_DISPLAY_MODE_Pin, GPIO_PIN_SET);
-
-  gpio.Pin = LCD_RESET_Pin;
-  HAL_GPIO_Init(LCD_RESET_GPIO_Port, &gpio);
-  HAL_GPIO_WritePin(LCD_RESET_GPIO_Port, LCD_RESET_Pin, GPIO_PIN_SET);
 }
 
 static void lcd_ltdc_init(void) {
@@ -140,9 +151,13 @@ static void lcd_ltdc_init(void) {
 
 static void disp_flush(lv_disp_drv_t *drv, const lv_area_t *area, lv_color_t *color_p) {
   LV_UNUSED(area);
-  LV_UNUSED(color_p);
 
   SCB_CleanInvalidateDCache();
+
+  if (HAL_LTDC_SetAddress(&hltdc, (uint32_t)color_p, 0) != HAL_OK) {
+    lcd_error();
+  }
+
   lv_disp_flush_ready(drv);
 }
 
@@ -155,26 +170,29 @@ void LCD_init(void) {
     lcd_error();
   }
 
+  lcd_panel_prepare();
   lcd_ltdc_msp_init();
-  lcd_ltdc_init();
   lcd_panel_power_on();
+  lcd_ltdc_init();
 
-  memset(
-      (void *)LCD_LAYER_0_ADDRESS, 0, LCD_DEFAULT_WIDTH * LCD_DEFAULT_HEIGHT * sizeof(lv_color_t));
+  memset(framebuffer_1, 0, LCD_DEFAULT_WIDTH * LCD_DEFAULT_HEIGHT * sizeof(lv_color_t));
+  memset(framebuffer_2, 0, LCD_DEFAULT_WIDTH * LCD_DEFAULT_HEIGHT * sizeof(lv_color_t));
   SCB_CleanInvalidateDCache();
 
   lv_disp_draw_buf_init(
-      &draw_buf, (void *)LCD_LAYER_0_ADDRESS, NULL, LCD_DEFAULT_WIDTH * LCD_DEFAULT_HEIGHT);
+      &draw_buf, framebuffer_1, framebuffer_2, LCD_DEFAULT_WIDTH * LCD_DEFAULT_HEIGHT);
 
   lv_disp_drv_init(&disp_drv);
   disp_drv.hor_res = LCD_DEFAULT_WIDTH;
   disp_drv.ver_res = LCD_DEFAULT_HEIGHT;
   disp_drv.flush_cb = disp_flush;
   disp_drv.draw_buf = &draw_buf;
-  disp_drv.direct_mode = 1;
+  disp_drv.full_refresh = 1;
   display = lv_disp_drv_register(&disp_drv);
 
   if (display == NULL) {
     lcd_error();
   }
+
+  lcd_backlight_on();
 }

@@ -18,6 +18,11 @@ set(linker_script_SRC
 )
 
 set(sources_SRCS
+    ${CMAKE_CURRENT_SOURCE_DIR}/Src/app_can_config.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/Src/app_can.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/Src/app_data_log.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/Src/app_emmc_log.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/Src/app_tasks.c
     ${CMAKE_CURRENT_SOURCE_DIR}/Src/main.c
     ${CMAKE_CURRENT_SOURCE_DIR}/Src/stm32h7xx_hal_msp.c
     ${CMAKE_CURRENT_SOURCE_DIR}/Src/stm32h7xx_it.c
@@ -31,6 +36,7 @@ set(sources_SRCS
     ${CMAKE_CURRENT_SOURCE_DIR}/Drivers/STM32H7xx_HAL_Driver/Src/stm32h7xx_hal_cortex.c
     ${CMAKE_CURRENT_SOURCE_DIR}/Drivers/STM32H7xx_HAL_Driver/Src/stm32h7xx_hal_dma.c
     ${CMAKE_CURRENT_SOURCE_DIR}/Drivers/STM32H7xx_HAL_Driver/Src/stm32h7xx_hal_dma_ex.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/Drivers/STM32H7xx_HAL_Driver/Src/stm32h7xx_hal_fdcan.c
     ${CMAKE_CURRENT_SOURCE_DIR}/Drivers/STM32H7xx_HAL_Driver/Src/stm32h7xx_hal_exti.c
     ${CMAKE_CURRENT_SOURCE_DIR}/Drivers/STM32H7xx_HAL_Driver/Src/stm32h7xx_hal_flash.c
     ${CMAKE_CURRENT_SOURCE_DIR}/Drivers/STM32H7xx_HAL_Driver/Src/stm32h7xx_hal_flash_ex.c
@@ -40,6 +46,8 @@ set(sources_SRCS
     ${CMAKE_CURRENT_SOURCE_DIR}/Drivers/STM32H7xx_HAL_Driver/Src/stm32h7xx_hal_i2c_ex.c
     ${CMAKE_CURRENT_SOURCE_DIR}/Drivers/STM32H7xx_HAL_Driver/Src/stm32h7xx_hal_ltdc.c
     ${CMAKE_CURRENT_SOURCE_DIR}/Drivers/STM32H7xx_HAL_Driver/Src/stm32h7xx_hal_ltdc_ex.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/Drivers/STM32H7xx_HAL_Driver/Src/stm32h7xx_hal_mmc.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/Drivers/STM32H7xx_HAL_Driver/Src/stm32h7xx_hal_mmc_ex.c
     ${CMAKE_CURRENT_SOURCE_DIR}/Drivers/STM32H7xx_HAL_Driver/Src/stm32h7xx_hal_mdma.c
     ${CMAKE_CURRENT_SOURCE_DIR}/Drivers/STM32H7xx_HAL_Driver/Src/stm32h7xx_hal_pwr.c
     ${CMAKE_CURRENT_SOURCE_DIR}/Drivers/STM32H7xx_HAL_Driver/Src/stm32h7xx_hal_pwr_ex.c
@@ -50,12 +58,14 @@ set(sources_SRCS
     ${CMAKE_CURRENT_SOURCE_DIR}/Drivers/STM32H7xx_HAL_Driver/Src/stm32h7xx_hal_uart.c
     ${CMAKE_CURRENT_SOURCE_DIR}/Drivers/STM32H7xx_HAL_Driver/Src/stm32h7xx_hal_uart_ex.c
     ${CMAKE_CURRENT_SOURCE_DIR}/Drivers/STM32H7xx_HAL_Driver/Src/stm32h7xx_ll_fmc.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/Drivers/STM32H7xx_HAL_Driver/Src/stm32h7xx_ll_sdmmc.c
     ${CMAKE_CURRENT_SOURCE_DIR}/Drivers/BSP/Components/mt25tl01g/mt25tl01g.c
     ${CMAKE_CURRENT_SOURCE_DIR}/Drivers/BSP/Components/mt48lc4m32b2/mt48lc4m32b2.c
     ${CMAKE_CURRENT_SOURCE_DIR}/Drivers/BSP/Components/ft5336/ft5336.c
     ${CMAKE_CURRENT_SOURCE_DIR}/Drivers/BSP/Components/ft5336/ft5336_reg.c
     ${CMAKE_CURRENT_SOURCE_DIR}/Drivers/BSP/STM32H745I-DISCO/stm32h745i_discovery.c
     ${CMAKE_CURRENT_SOURCE_DIR}/Drivers/BSP/STM32H745I-DISCO/stm32h745i_discovery_bus.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/Drivers/BSP/STM32H745I-DISCO/stm32h745i_discovery_mmc.c
     ${CMAKE_CURRENT_SOURCE_DIR}/Drivers/BSP/STM32H745I-DISCO/stm32h745i_discovery_qspi.c
     ${CMAKE_CURRENT_SOURCE_DIR}/Drivers/BSP/STM32H745I-DISCO/stm32h745i_discovery_sdram.c
     ${CMAKE_CURRENT_SOURCE_DIR}/Drivers/BSP/STM32H745I-DISCO/stm32h745i_discovery_ts.c
@@ -90,6 +100,15 @@ set(common_compile_options
     -fno-unwind-tables
     -fno-asynchronous-unwind-tables
 )
+
+set(FREERTOS_PACK_DIR
+    "$ENV{HOME}/Library/Application Support/stm32cube/packs/STMicroelectronics/freertos/2.0.0"
+    CACHE PATH
+    "Path to the ST FreeRTOS pack")
+
+if(NOT EXISTS "${FREERTOS_PACK_DIR}/tasks.c")
+    message(FATAL_ERROR "FreeRTOS pack not found at ${FREERTOS_PACK_DIR}")
+endif()
 
 set(LV_CONF_PATH "${CMAKE_CURRENT_SOURCE_DIR}/lv_conf.h" CACHE PATH "LVGL configuration" FORCE)
 set(LV_BUILD_CONF_PATH "${CMAKE_CURRENT_SOURCE_DIR}/lv_conf.h" CACHE PATH "LVGL configuration" FORCE)
@@ -129,6 +148,27 @@ endfunction()
 configure_embedded_library(lvgl)
 configure_embedded_library(ui)
 
+add_library(freertos_kernel STATIC
+    "${FREERTOS_PACK_DIR}/event_groups.c"
+    "${FREERTOS_PACK_DIR}/list.c"
+    "${FREERTOS_PACK_DIR}/queue.c"
+    "${FREERTOS_PACK_DIR}/tasks.c"
+    "${FREERTOS_PACK_DIR}/portable/GCC/ARM_CM4F/port.c"
+    "${FREERTOS_PACK_DIR}/portable/MemMang/heap_4.c"
+)
+target_include_directories(freertos_kernel SYSTEM PUBLIC
+    "${FREERTOS_PACK_DIR}/include"
+    "${FREERTOS_PACK_DIR}/portable/GCC/ARM_CM4F"
+    ${CMAKE_CURRENT_SOURCE_DIR}/Inc
+    ${CMAKE_CURRENT_SOURCE_DIR}/Drivers/CMSIS/Include
+    ${CMAKE_CURRENT_SOURCE_DIR}/Drivers/CMSIS/Device/ST/STM32H7xx/Include
+    ${CMAKE_CURRENT_SOURCE_DIR}/Drivers/STM32H7xx_HAL_Driver/Inc
+)
+target_compile_definitions(freertos_kernel PUBLIC
+    ${symbols_COMMON}
+)
+configure_embedded_library(freertos_kernel)
+
 target_include_directories(ui PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${include_DIRS}
@@ -147,6 +187,7 @@ target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE
 )
 
 target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE
+    freertos_kernel
     lvgl
     ui
 )

@@ -57,7 +57,6 @@ void HAL_TIM_MspPostInit(TIM_HandleTypeDef *htim);
 void Error_Handler(void);
 
 /* USER CODE BEGIN EFP */
-void LVGL_TickSetEnabled(uint8_t enabled);
 
 /* USER CODE END EFP */
 

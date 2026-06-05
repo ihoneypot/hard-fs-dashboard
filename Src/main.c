@@ -1,14 +1,23 @@
 #include "main.h"
 
+#include <stdio.h>
+
+#include "app_can.h"
+#include "app_tasks.h"
+#include "FreeRTOS.h"
+#include "task.h"
 #include "stm32h745i_discovery_qspi.h"
-#include "lvgl/lvgl.h"
-#include "lvgl_port_lcd.h"
-#include "lvgl_port_touchpad.h"
-#include "ui/ui.h"
 
 void SystemClock_Config(void);
 static void MPU_Config(void);
+static void DebugConsole_Init(void);
 void Error_Handler(void);
+
+#ifdef DEBUG
+#  define APP_BUILD_CONFIGURATION_NAME "Debug"
+#else
+#  define APP_BUILD_CONFIGURATION_NAME "Release"
+#endif
 
 int main(void) {
   BSP_QSPI_Init_t qspi_init;
@@ -18,10 +27,15 @@ int main(void) {
   SCB_EnableDCache();
 
   HAL_Init();
-  SystemClock_Config();
 
-  BSP_LED_Init(LED1);
-  BSP_LED_Init(LED2);
+  SystemClock_Config();
+  DebugConsole_Init();
+
+  printf("\r\n[boot] hard-fs-dashboard build=%s can_debug=%u\r\n",
+         APP_BUILD_CONFIGURATION_NAME,
+         app_can_is_debug_enabled() ? 1U : 0U);
+
+  HAL_Delay(50);
 
   qspi_init.InterfaceMode = MT25TL01G_QPI_MODE;
   qspi_init.TransferRate = MT25TL01G_DTR_TRANSFER;
@@ -35,25 +49,33 @@ int main(void) {
     Error_Handler();
   }
 
-  lv_init();
-  LVGL_TickSetEnabled(1U);
-  LCD_init();
-  touchpad_init();
-  ui_init();
+  __DSB();
+  __ISB();
+  SCB_InvalidateICache();
 
-  while (1) {
-    HAL_Delay(5);
-    lv_timer_handler();
+  if (!app_tasks_start()) {
+    Error_Handler();
   }
+
+  vTaskStartScheduler();
+  Error_Handler();
 }
 
 void SystemClock_Config(void) {
   RCC_OscInitTypeDef RCC_OscInitStruct = {0};
   RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
+  uint32_t timeout_start = HAL_GetTick();
+
+  if (HAL_PWREx_ConfigSupply(PWR_LDO_SUPPLY) != HAL_OK) {
+    Error_Handler();
+  }
 
   __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE1);
 
   while (!__HAL_PWR_GET_FLAG(PWR_FLAG_VOSRDY)) {
+    if ((HAL_GetTick() - timeout_start) > 100U) {
+      Error_Handler();
+    }
   }
 
   RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSE;
@@ -90,7 +112,34 @@ void SystemClock_Config(void) {
 }
 
 void Error_Handler(void) {
+  __disable_irq();
   while (1) {
+    __NOP();
+  }
+}
+
+void vApplicationStackOverflowHook(TaskHandle_t xTask, char *pcTaskName) {
+  (void)xTask;
+  (void)pcTaskName;
+
+  Error_Handler();
+}
+
+static void DebugConsole_Init(void) {
+  COM_InitTypeDef com_init = {0};
+
+  com_init.BaudRate = 115200U;
+  com_init.WordLength = COM_WORDLENGTH_8B;
+  com_init.StopBits = COM_STOPBITS_1;
+  com_init.Parity = COM_PARITY_NONE;
+  com_init.HwFlowCtl = COM_HWCONTROL_NONE;
+
+  if (BSP_COM_Init(COM1, &com_init) != BSP_ERROR_NONE) {
+    Error_Handler();
+  }
+
+  if (BSP_COM_SelectLogPort(COM1) != BSP_ERROR_NONE) {
+    Error_Handler();
   }
 }
 
