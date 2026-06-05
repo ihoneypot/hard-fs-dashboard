@@ -570,8 +570,6 @@ void ui_MainScreen_screen_init(void) {
   lv_obj_clear_flag(ui_imgBattLevelIco, LV_OBJ_FLAG_SCROLLABLE); /// Flags
 
   lv_obj_add_event_cb(ui_MainScreen, ui_event_MainScreen, LV_EVENT_ALL, NULL);
-
-  ui_show_main_screen_slider_demo();
 }
 
 void ui_MainScreen_screen_destroy(void) {

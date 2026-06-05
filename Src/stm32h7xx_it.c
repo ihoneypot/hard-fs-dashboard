@@ -22,7 +22,9 @@
 #include "stm32h7xx_it.h"
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-#include "lvgl/lvgl.h"
+#include "FreeRTOS.h"
+#include "task.h"
+#include "stm32h745i_discovery_mmc.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -42,7 +44,6 @@
 
 /* Private variables ---------------------------------------------------------*/
 /* USER CODE BEGIN PV */
-static volatile uint8_t lvgl_tick_enabled = 0U;
 
 /* USER CODE END PV */
 
@@ -53,9 +54,9 @@ static volatile uint8_t lvgl_tick_enabled = 0U;
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-void LVGL_TickSetEnabled(uint8_t enabled) {
-  lvgl_tick_enabled = enabled;
-}
+extern void vPortSVCHandler(void);
+extern void xPortPendSVHandler(void);
+extern void xPortSysTickHandler(void);
 
 /* USER CODE END 0 */
 
@@ -142,6 +143,7 @@ void SVC_Handler(void) {
 
   /* USER CODE END SVCall_IRQn 0 */
   /* USER CODE BEGIN SVCall_IRQn 1 */
+  vPortSVCHandler();
 
   /* USER CODE END SVCall_IRQn 1 */
 }
@@ -166,6 +168,7 @@ void PendSV_Handler(void) {
 
   /* USER CODE END PendSV_IRQn 0 */
   /* USER CODE BEGIN PendSV_IRQn 1 */
+  xPortPendSVHandler();
 
   /* USER CODE END PendSV_IRQn 1 */
 }
@@ -179,8 +182,8 @@ void SysTick_Handler(void) {
   /* USER CODE END SysTick_IRQn 0 */
   HAL_IncTick();
   /* USER CODE BEGIN SysTick_IRQn 1 */
-  if (lvgl_tick_enabled != 0U) {
-    lv_tick_inc(1);
+  if (xTaskGetSchedulerState() != taskSCHEDULER_NOT_STARTED) {
+    xPortSysTickHandler();
   }
 
   /* USER CODE END SysTick_IRQn 1 */
@@ -216,6 +219,10 @@ void SysTick_Handler(void) {
 //
 //  /* USER CODE END QUADSPI_IRQn 0 */
 //  HAL_QSPI_IRQHandler(&hqspi);
+
+void SDMMC1_IRQHandler(void) {
+  BSP_MMC_IRQHandler(0);
+}
 //  /* USER CODE BEGIN QUADSPI_IRQn 1 */
 //
 //  /* USER CODE END QUADSPI_IRQn 1 */

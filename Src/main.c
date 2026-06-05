@@ -1,14 +1,23 @@
 #include "main.h"
 
+#include <stdio.h>
+
+#include "app_can.h"
+#include "app_tasks.h"
+#include "FreeRTOS.h"
+#include "task.h"
 #include "stm32h745i_discovery_qspi.h"
-#include "lvgl/lvgl.h"
-#include "lvgl_port_lcd.h"
-#include "lvgl_port_touchpad.h"
-#include "ui/ui.h"
 
 void SystemClock_Config(void);
 static void MPU_Config(void);
+static void DebugConsole_Init(void);
 void Error_Handler(void);
+
+#ifdef DEBUG
+#  define APP_BUILD_CONFIGURATION_NAME "Debug"
+#else
+#  define APP_BUILD_CONFIGURATION_NAME "Release"
+#endif
 
 int main(void) {
   BSP_QSPI_Init_t qspi_init;
@@ -20,6 +29,11 @@ int main(void) {
   HAL_Init();
 
   SystemClock_Config();
+  DebugConsole_Init();
+
+  printf("\r\n[boot] hard-fs-dashboard build=%s can_debug=%u\r\n",
+         APP_BUILD_CONFIGURATION_NAME,
+         app_can_is_debug_enabled() ? 1U : 0U);
 
   HAL_Delay(50);
 
@@ -39,17 +53,12 @@ int main(void) {
   __ISB();
   SCB_InvalidateICache();
 
-  lv_init();
-  LVGL_TickSetEnabled(1U);
-  LCD_init();
-  touchpad_init();
-  ui_init();
-
-  while (1) {
-    ui_step_main_screen_slider_demo();
-    HAL_Delay(5);
-    lv_timer_handler();
+  if (!app_tasks_start()) {
+    Error_Handler();
   }
+
+  vTaskStartScheduler();
+  Error_Handler();
 }
 
 void SystemClock_Config(void) {
@@ -106,6 +115,31 @@ void Error_Handler(void) {
   __disable_irq();
   while (1) {
     __NOP();
+  }
+}
+
+void vApplicationStackOverflowHook(TaskHandle_t xTask, char *pcTaskName) {
+  (void)xTask;
+  (void)pcTaskName;
+
+  Error_Handler();
+}
+
+static void DebugConsole_Init(void) {
+  COM_InitTypeDef com_init = {0};
+
+  com_init.BaudRate = 115200U;
+  com_init.WordLength = COM_WORDLENGTH_8B;
+  com_init.StopBits = COM_STOPBITS_1;
+  com_init.Parity = COM_PARITY_NONE;
+  com_init.HwFlowCtl = COM_HWCONTROL_NONE;
+
+  if (BSP_COM_Init(COM1, &com_init) != BSP_ERROR_NONE) {
+    Error_Handler();
+  }
+
+  if (BSP_COM_SelectLogPort(COM1) != BSP_ERROR_NONE) {
+    Error_Handler();
   }
 }
 
