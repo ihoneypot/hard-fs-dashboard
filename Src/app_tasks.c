@@ -40,8 +40,13 @@ static const app_can_dashboard_data_t app_default_dashboard_data = {
 };
 
 #define APP_GUI_TASK_STACK_WORDS 2048U
-#define APP_GUI_TASK_PRIORITY (tskIDLE_PRIORITY + 1U)
+#define APP_GUI_TASK_PRIORITY (tskIDLE_PRIORITY + 3U)
 #define APP_GUI_TASK_PERIOD_MS 5U
+
+#define APP_STATUS_INPUT_TASK_STACK_WORDS 1024U
+#define APP_STATUS_INPUT_TASK_PRIORITY (tskIDLE_PRIORITY + 4U)
+#define APP_STATUS_INPUT_TASK_PERIOD_MS 1U
+#define APP_IMD_SIGNAL_TIMEOUT_MS 250U
 
 #define APP_CAN_TASK_STACK_WORDS 1024U
 #define APP_CAN_TASK_PRIORITY (tskIDLE_PRIORITY + 2U)
@@ -54,14 +59,8 @@ static const app_can_dashboard_data_t app_default_dashboard_data = {
 #define APP_CONSOLE_UART_RX_TIMEOUT_MS 50U
 
 /*
- * These inputs do not have their final transport yet:
- * - speed / drive mode will later come from a separate CAN device
- * - IMD / FAULT / RTD / TSAL / BSPD / SDC / READY TO DRIVE will later come
- *   from digital inputs
- *
- * For now keep the UI wiring and behavior in place with placeholder data.
+ * Speed / drive mode still use placeholder data until the correct input until will be defined
  */
-#define APP_AUX_CAN_PLACEHOLDER_UPDATE_MS 200U
 #define APP_DRIVE_MODE_PLACEHOLDER_STEP_MS 5000U
 #define APP_STATUS_BOOT_DISPLAY_MS 3000U
 #define APP_STATUS_OK_COLOR 0x52BA00U
@@ -73,6 +72,17 @@ typedef enum {
   APP_DRIVE_MODE_REVERSE,
   APP_DRIVE_MODE_COUNT
 } app_drive_mode_t;
+
+typedef enum {
+  APP_IMD_ERROR_UNKNOWN = 0,
+  APP_IMD_ERROR_NORMAL,
+  APP_IMD_ERROR_UNDERVOLTAGE,
+  APP_IMD_ERROR_STARTUP_TEST,
+  APP_IMD_ERROR_DEVICE_ERROR,
+  APP_IMD_ERROR_GROUND_FAULT,
+  APP_IMD_ERROR_NO_SIGNAL,
+  APP_IMD_ERROR_INVALID
+} app_imd_error_t;
 
 typedef enum {
   APP_STATUS_SIGNAL_IMD = 0,
@@ -87,6 +97,7 @@ typedef enum {
 
 typedef struct {
   bool fault_active;
+  bool force_visible;
 } app_status_signal_state_t;
 
 typedef struct {
@@ -95,8 +106,20 @@ typedef struct {
   bool speed_valid;
   bool drive_mode_valid;
   bool status_inputs_initialized;
+  uint32_t imd_frequency_hz;
+  app_imd_error_t imd_error;
   app_status_signal_state_t status_signals[APP_STATUS_SIGNAL_COUNT];
 } app_aux_ui_state_t;
+
+typedef struct {
+  bool initialized;
+  uint32_t imd_frequency_hz;
+  app_imd_error_t imd_error;
+  app_status_signal_state_t status_signals[APP_STATUS_SIGNAL_COUNT];
+} app_status_input_state_t;
+
+static app_status_input_state_t app_status_input_state = {0};
+static volatile uint32_t app_imd_irq_rising_edge_count = 0U;
 
 static int32_t app_ui_abs_int32(int32_t value) {
   return (value < 0) ? -value : value;
@@ -128,15 +151,16 @@ static int32_t app_ui_slider_from_current(int16_t current_deci_amps) {
   return current_amps;
 }
 
-static void app_ui_set_voltage_mv_label(lv_obj_t *label, uint16_t voltage_100uv) {
-  uint16_t millivolts = 0U;
+static void app_ui_set_voltage_v_label(lv_obj_t *label, uint16_t voltage_100uv) {
+  uint32_t millivolts = 0U;
 
   if (label == NULL) {
     return;
   }
 
   millivolts = (uint16_t)((voltage_100uv + 5U) / 10U);
-  lv_label_set_text_fmt(label, "%u", (unsigned int)millivolts);
+  lv_label_set_text_fmt(
+      label, "%lu.%03lu", (unsigned long)(millivolts / 1000U), (unsigned long)(millivolts % 1000U));
 }
 
 static void app_ui_set_signed_integer_label(lv_obj_t *label, int16_t value) {
@@ -224,6 +248,165 @@ static void app_ui_set_status_indicator_color(app_status_signal_id_t signal_id, 
   }
 }
 
+static void app_status_inputs_gpio_init(void) {
+  GPIO_InitTypeDef gpio = {0};
+
+  __HAL_RCC_GPIOA_CLK_ENABLE();
+  __HAL_RCC_GPIOB_CLK_ENABLE();
+  __HAL_RCC_GPIOE_CLK_ENABLE();
+  __HAL_RCC_GPIOI_CLK_ENABLE();
+
+  gpio.Mode = GPIO_MODE_INPUT;
+  gpio.Pull = GPIO_NOPULL;
+  gpio.Speed = GPIO_SPEED_FREQ_LOW;
+
+  gpio.Pin = APP_IMD_MLS_Pin;
+  HAL_GPIO_Init(APP_IMD_MLS_GPIO_Port, &gpio);
+
+  gpio.Pin = APP_RTD_Pin;
+  HAL_GPIO_Init(APP_RTD_GPIO_Port, &gpio);
+
+  gpio.Pin = APP_TSAL_Pin;
+  HAL_GPIO_Init(APP_TSAL_GPIO_Port, &gpio);
+
+  gpio.Pin = APP_BSPD_Pin;
+  HAL_GPIO_Init(APP_BSPD_GPIO_Port, &gpio);
+
+  gpio.Pin = APP_IMD_IRQ_Pin;
+  gpio.Mode = GPIO_MODE_IT_RISING;
+  HAL_GPIO_Init(APP_IMD_IRQ_GPIO_Port, &gpio);
+
+  HAL_NVIC_SetPriority(APP_IMD_IRQ_EXTI_IRQn, 5U, 0U);
+  HAL_NVIC_EnableIRQ(APP_IMD_IRQ_EXTI_IRQn);
+}
+
+void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
+  if (GPIO_Pin == APP_IMD_IRQ_Pin) {
+    ++app_imd_irq_rising_edge_count;
+  }
+}
+
+static bool app_imd_error_is_fault(app_imd_error_t error) {
+  switch (error) {
+  case APP_IMD_ERROR_NORMAL:
+  case APP_IMD_ERROR_UNKNOWN:
+    return false;
+
+  case APP_IMD_ERROR_UNDERVOLTAGE:
+  case APP_IMD_ERROR_STARTUP_TEST:
+  case APP_IMD_ERROR_DEVICE_ERROR:
+  case APP_IMD_ERROR_GROUND_FAULT:
+  case APP_IMD_ERROR_NO_SIGNAL:
+  case APP_IMD_ERROR_INVALID:
+  default:
+    return true;
+  }
+}
+
+static app_imd_error_t app_status_inputs_decode_imd_frequency(uint32_t frequency_hz) {
+  if ((frequency_hz >= 8U) && (frequency_hz <= 12U)) {
+    return APP_IMD_ERROR_NORMAL;
+  }
+
+  if ((frequency_hz >= 18U) && (frequency_hz <= 22U)) {
+    return APP_IMD_ERROR_UNDERVOLTAGE;
+  }
+
+  if ((frequency_hz >= 27U) && (frequency_hz <= 33U)) {
+    return APP_IMD_ERROR_STARTUP_TEST;
+  }
+
+  if ((frequency_hz >= 36U) && (frequency_hz <= 44U)) {
+    return APP_IMD_ERROR_DEVICE_ERROR;
+  }
+
+  if ((frequency_hz >= 45U) && (frequency_hz <= 55U)) {
+    return APP_IMD_ERROR_GROUND_FAULT;
+  }
+
+  return APP_IMD_ERROR_INVALID;
+}
+
+static void app_ui_set_imd_error_label(app_imd_error_t error, uint32_t frequency_hz) {
+  const char *text = "WAIT";
+  lv_color_t color = lv_color_hex(0xFFFFFFU);
+
+  if (ui_labelDebugIMDErrors == NULL) {
+    return;
+  }
+
+  app_ui_set_object_hidden(ui_labelDebugSpeedLow, true);
+
+  switch (error) {
+  case APP_IMD_ERROR_NORMAL:
+    text = "OK";
+    color = lv_color_hex(APP_STATUS_OK_COLOR);
+    break;
+
+  case APP_IMD_ERROR_UNDERVOLTAGE:
+    text = "UV";
+    color = lv_color_hex(APP_STATUS_FAULT_COLOR);
+    break;
+
+  case APP_IMD_ERROR_STARTUP_TEST:
+    text = "TEST";
+    color = lv_color_hex(APP_STATUS_FAULT_COLOR);
+    break;
+
+  case APP_IMD_ERROR_DEVICE_ERROR:
+    text = "DEV";
+    color = lv_color_hex(APP_STATUS_FAULT_COLOR);
+    break;
+
+  case APP_IMD_ERROR_GROUND_FAULT:
+    text = "GND";
+    color = lv_color_hex(APP_STATUS_FAULT_COLOR);
+    break;
+
+  case APP_IMD_ERROR_NO_SIGNAL:
+    text = "NO SIG";
+    color = lv_color_hex(APP_STATUS_FAULT_COLOR);
+    break;
+
+  case APP_IMD_ERROR_INVALID:
+    text = "INV";
+    color = lv_color_hex(APP_STATUS_FAULT_COLOR);
+    break;
+
+  case APP_IMD_ERROR_UNKNOWN:
+  default:
+    text = "WAIT";
+    color = lv_color_hex(0xFFFFFFU);
+    break;
+  }
+
+  if ((frequency_hz > 0U) && (error != APP_IMD_ERROR_NO_SIGNAL) &&
+      (error != APP_IMD_ERROR_UNKNOWN)) {
+    lv_label_set_text_fmt(ui_labelDebugIMDErrors, "%s %lu", text, (unsigned long)frequency_hz);
+  } else {
+    lv_label_set_text(ui_labelDebugIMDErrors, text);
+  }
+
+  lv_obj_set_style_text_color(ui_labelDebugIMDErrors, color, LV_PART_MAIN | LV_STATE_DEFAULT);
+}
+
+static void app_ui_copy_status_inputs(app_aux_ui_state_t *state) {
+  app_status_input_state_t snapshot = {0};
+
+  if (state == NULL) {
+    return;
+  }
+
+  taskENTER_CRITICAL();
+  snapshot = app_status_input_state;
+  taskEXIT_CRITICAL();
+
+  state->status_inputs_initialized = snapshot.initialized;
+  state->imd_frequency_hz = snapshot.imd_frequency_hz;
+  state->imd_error = snapshot.imd_error;
+  memcpy(state->status_signals, snapshot.status_signals, sizeof(snapshot.status_signals));
+}
+
 static const char *app_ui_drive_mode_to_text(app_drive_mode_t drive_mode) {
   switch (drive_mode) {
   case APP_DRIVE_MODE_NEUTRAL:
@@ -239,28 +422,15 @@ static const char *app_ui_drive_mode_to_text(app_drive_mode_t drive_mode) {
 }
 
 static void app_ui_update_aux_placeholders(app_aux_ui_state_t *state, uint32_t now_ms) {
-  static uint32_t last_speed_update_ms = 0U;
   static uint32_t last_drive_mode_update_ms = 0U;
-  static int32_t speed_value = 0;
-  static int32_t speed_direction = 1;
 
   if (state == NULL) {
     return;
   }
 
-  if ((now_ms - last_speed_update_ms) >= APP_AUX_CAN_PLACEHOLDER_UPDATE_MS) {
-    speed_value += (speed_direction * 3);
-    if (speed_value >= 160) {
-      speed_value = 160;
-      speed_direction = -1;
-    } else if (speed_value <= 0) {
-      speed_value = 0;
-      speed_direction = 1;
-    }
-
-    state->speed_kph = (uint16_t)speed_value;
+  if (!state->speed_valid) {
+    state->speed_kph = 0U;
     state->speed_valid = true;
-    last_speed_update_ms = now_ms;
   }
 
   if (!state->drive_mode_valid) {
@@ -272,19 +442,10 @@ static void app_ui_update_aux_placeholders(app_aux_ui_state_t *state, uint32_t n
         (app_drive_mode_t)(((uint32_t)state->drive_mode + 1U) % (uint32_t)APP_DRIVE_MODE_COUNT);
     last_drive_mode_update_ms = now_ms;
   }
-
-  /*
-   * No GPIO map is defined yet, so keep all digital statuses in the healthy
-   * state. Once the real pins are known this function is the single place to
-   * replace with GPIO reads and final polarity rules.
-   */
-  state->status_inputs_initialized = (now_ms >= APP_STATUS_BOOT_DISPLAY_MS);
-  for (uint32_t i = 0U; i < (uint32_t)APP_STATUS_SIGNAL_COUNT; ++i) {
-    state->status_signals[i].fault_active = false;
-  }
 }
 
 static void app_ui_apply_aux_state(const app_aux_ui_state_t *state, uint32_t now_ms) {
+  bool any_fault_active = false;
   bool show_status_indicators = false;
 
   if (state == NULL) {
@@ -308,12 +469,14 @@ static void app_ui_apply_aux_state(const app_aux_ui_state_t *state, uint32_t now
         ui_labelDriveMode, lv_color_hex(APP_STATUS_OK_COLOR), LV_PART_MAIN | LV_STATE_DEFAULT);
   }
 
+  app_ui_set_imd_error_label(state->imd_error, state->imd_frequency_hz);
+
   if (!state->status_inputs_initialized || (now_ms < APP_STATUS_BOOT_DISPLAY_MS)) {
     show_status_indicators = true;
   } else {
     for (uint32_t i = 0U; i < (uint32_t)APP_STATUS_SIGNAL_COUNT; ++i) {
       if (state->status_signals[i].fault_active) {
-        show_status_indicators = true;
+        any_fault_active = true;
         break;
       }
     }
@@ -323,10 +486,12 @@ static void app_ui_apply_aux_state(const app_aux_ui_state_t *state, uint32_t now
     lv_color_t color = state->status_signals[i].fault_active ? lv_color_hex(APP_STATUS_FAULT_COLOR)
                                                              : lv_color_hex(APP_STATUS_OK_COLOR);
     app_status_signal_id_t signal_id = (app_status_signal_id_t)i;
+    bool hidden =
+        !(show_status_indicators || any_fault_active || state->status_signals[i].force_visible);
 
     app_ui_set_status_indicator_color(signal_id, color);
-    app_ui_set_object_hidden(app_ui_get_status_panel(signal_id), !show_status_indicators);
-    app_ui_set_object_hidden(app_ui_get_status_label(signal_id), !show_status_indicators);
+    app_ui_set_object_hidden(app_ui_get_status_panel(signal_id), hidden);
+    app_ui_set_object_hidden(app_ui_get_status_label(signal_id), hidden);
   }
 }
 
@@ -362,9 +527,9 @@ static void app_ui_apply_dashboard_data(const app_can_dashboard_data_t *data) {
     lv_label_set_text_fmt(ui_labelBatteryTempLow, "%d", (int)data->lowest_temperature_c);
   }
 
-  app_ui_set_voltage_mv_label(ui_labelBatteryVoltLow, data->lowest_cell_voltage_100uv);
-  app_ui_set_voltage_mv_label(ui_labelBatteryVoltAvg, data->average_cell_voltage_100uv);
-  app_ui_set_voltage_mv_label(ui_labelBatteryVoltHigh, data->highest_cell_voltage_100uv);
+  app_ui_set_voltage_v_label(ui_labelBatteryVoltLow, data->lowest_cell_voltage_100uv);
+  app_ui_set_voltage_v_label(ui_labelBatteryVoltAvg, data->average_cell_voltage_100uv);
+  app_ui_set_voltage_v_label(ui_labelBatteryVoltHigh, data->highest_cell_voltage_100uv);
 
   app_ui_set_signed_integer_label(ui_labelBatteryPowerLow, data->lowest_pack_power_kw);
   app_ui_set_signed_integer_label(ui_labelBatteryPowerAvg, data->average_pack_power_kw);
@@ -507,6 +672,96 @@ static void app_console_handle_command(uint8_t command) {
   }
 }
 
+static void app_status_input_task(void *argument) {
+  app_status_input_state_t next_state = {0};
+  TickType_t last_wake = xTaskGetTickCount();
+  uint32_t imd_irq_rising_edge_count = 0U;
+  uint32_t imd_irq_first_seen_ms = 0U;
+  bool imd_prev_level = false;
+  bool imd_prev_level_valid = false;
+  bool imd_have_rising_edge = false;
+  uint32_t imd_last_rising_ms = 0U;
+  uint32_t imd_frequency_hz = 0U;
+  uint32_t now_ms = 0U;
+  app_imd_error_t imd_error = APP_IMD_ERROR_UNKNOWN;
+  bool imd_level_high = false;
+  bool rtd_active = false;
+  bool tsal_active = false;
+  bool bspd_active = false;
+
+  (void)argument;
+
+  for (;;) {
+    now_ms = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
+    if (app_imd_irq_rising_edge_count != imd_irq_rising_edge_count) {
+      if (imd_irq_rising_edge_count == 0U) {
+        imd_irq_first_seen_ms = now_ms;
+      }
+
+      imd_irq_rising_edge_count = app_imd_irq_rising_edge_count;
+      if (!imd_have_rising_edge) {
+        imd_error = APP_IMD_ERROR_UNKNOWN;
+      }
+    }
+
+    imd_level_high = HAL_GPIO_ReadPin(APP_IMD_MLS_GPIO_Port, APP_IMD_MLS_Pin) == GPIO_PIN_SET;
+    rtd_active = HAL_GPIO_ReadPin(APP_RTD_GPIO_Port, APP_RTD_Pin) == GPIO_PIN_SET;
+    tsal_active = HAL_GPIO_ReadPin(APP_TSAL_GPIO_Port, APP_TSAL_Pin) == GPIO_PIN_SET;
+    bspd_active = HAL_GPIO_ReadPin(APP_BSPD_GPIO_Port, APP_BSPD_Pin) == GPIO_PIN_SET;
+
+    if (!imd_prev_level_valid) {
+      imd_prev_level = imd_level_high;
+      imd_prev_level_valid = true;
+    } else if (imd_level_high && !imd_prev_level) {
+      if (imd_have_rising_edge) {
+        uint32_t period_ms = now_ms - imd_last_rising_ms;
+
+        if (period_ms > 0U) {
+          imd_frequency_hz = (1000U + (period_ms / 2U)) / period_ms;
+          imd_error = app_status_inputs_decode_imd_frequency(imd_frequency_hz);
+        }
+      }
+
+      imd_last_rising_ms = now_ms;
+      imd_have_rising_edge = true;
+    }
+
+    imd_prev_level = imd_level_high;
+
+    if (imd_have_rising_edge && ((now_ms - imd_last_rising_ms) > APP_IMD_SIGNAL_TIMEOUT_MS)) {
+      imd_have_rising_edge = false;
+      imd_frequency_hz = 0U;
+      imd_error = APP_IMD_ERROR_NO_SIGNAL;
+    } else if ((imd_irq_rising_edge_count > 0U) && !imd_have_rising_edge &&
+               ((now_ms - imd_irq_first_seen_ms) > APP_IMD_SIGNAL_TIMEOUT_MS)) {
+      imd_frequency_hz = 0U;
+      imd_error = APP_IMD_ERROR_NO_SIGNAL;
+    } else if (imd_irq_rising_edge_count == 0U) {
+      imd_frequency_hz = 0U;
+      imd_error = APP_IMD_ERROR_UNKNOWN;
+    }
+
+    memset(&next_state, 0, sizeof(next_state));
+    next_state.initialized = true;
+    next_state.imd_frequency_hz = imd_frequency_hz;
+    next_state.imd_error = imd_error;
+    next_state.status_signals[APP_STATUS_SIGNAL_IMD].fault_active =
+        app_imd_error_is_fault(imd_error);
+    next_state.status_signals[APP_STATUS_SIGNAL_RTD].force_visible = rtd_active;
+    next_state.status_signals[APP_STATUS_SIGNAL_TSAL].fault_active = tsal_active;
+    next_state.status_signals[APP_STATUS_SIGNAL_TSAL].force_visible = tsal_active;
+    next_state.status_signals[APP_STATUS_SIGNAL_BSPD].fault_active = bspd_active;
+    next_state.status_signals[APP_STATUS_SIGNAL_BSPD].force_visible = bspd_active;
+    next_state.status_signals[APP_STATUS_SIGNAL_READY_TO_DRIVE].force_visible = rtd_active;
+
+    taskENTER_CRITICAL();
+    app_status_input_state = next_state;
+    taskEXIT_CRITICAL();
+
+    vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(APP_STATUS_INPUT_TASK_PERIOD_MS));
+  }
+}
+
 static void app_gui_task(void *argument) {
   app_aux_ui_state_t aux_state = {0};
   app_aux_ui_state_t last_applied_aux_state = {0};
@@ -523,6 +778,7 @@ static void app_gui_task(void *argument) {
   ui_init();
   app_ui_apply_dashboard_data(&data);
   app_ui_update_aux_placeholders(&aux_state, 0U);
+  app_ui_copy_status_inputs(&aux_state);
   app_ui_apply_aux_state(&aux_state, 0U);
   last_applied_aux_state = aux_state;
   aux_state_applied = true;
@@ -534,6 +790,7 @@ static void app_gui_task(void *argument) {
 
     now_ms = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
     app_ui_update_aux_placeholders(&aux_state, now_ms);
+    app_ui_copy_status_inputs(&aux_state);
     if (!aux_state_applied ||
         (memcmp(&aux_state, &last_applied_aux_state, sizeof(aux_state)) != 0)) {
       app_ui_apply_aux_state(&aux_state, now_ms);
@@ -614,9 +871,19 @@ static void app_console_task(void *argument) {
 bool app_tasks_start(void) {
   app_data_log_init();
   (void)app_emmc_log_init();
+  app_status_inputs_gpio_init();
 
   app_ui_queue = xQueueCreate(1U, sizeof(app_can_dashboard_data_t));
   if (app_ui_queue == NULL) {
+    return false;
+  }
+
+  if (xTaskCreate(app_status_input_task,
+                  "status_in",
+                  APP_STATUS_INPUT_TASK_STACK_WORDS,
+                  NULL,
+                  APP_STATUS_INPUT_TASK_PRIORITY,
+                  NULL) != pdPASS) {
     return false;
   }
 

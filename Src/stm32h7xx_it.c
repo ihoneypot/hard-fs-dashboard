@@ -243,6 +243,10 @@ void SDMMC1_IRQHandler(void) {
 //}
 
 /* USER CODE BEGIN 1 */
+void EXTI9_5_IRQHandler(void) {
+  HAL_GPIO_EXTI_IRQHandler(APP_IMD_IRQ_Pin);
+}
+
 /**
  * @brief  This function handles External lines 15 to 10 interrupt request.
  * @param  None

@@ -85,6 +85,20 @@ void Error_Handler(void);
 #define LCD_RESET_Pin GPIO_PIN_12
 #define LCD_RESET_GPIO_Port GPIOB
 /* USER CODE BEGIN Private defines */
+#define APP_IMD_MLS_Pin GPIO_PIN_6
+#define APP_IMD_MLS_GPIO_Port GPIOA
+#define APP_IMD_IRQ_Pin GPIO_PIN_8
+#define APP_IMD_IRQ_GPIO_Port GPIOI
+#define APP_IMD_IRQ_EXTI_IRQn EXTI9_5_IRQn
+
+#define APP_RTD_Pin GPIO_PIN_1
+#define APP_RTD_GPIO_Port GPIOB
+
+#define APP_TSAL_Pin GPIO_PIN_13
+#define APP_TSAL_GPIO_Port GPIOB
+
+#define APP_BSPD_Pin GPIO_PIN_6
+#define APP_BSPD_GPIO_Port GPIOE
 
 /* USER CODE END Private defines */
 
